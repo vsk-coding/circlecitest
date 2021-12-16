@@ -1,0 +1,57 @@
+version: 2.1
+orbs:
+  anchore: anchore/anchore-engine@1
+executors:
+  env-publisher:
+    environment:
+      IMAGE_NAME: vishnusk/devsecops-lab
+jobs:
+  anchore_local_image_scan:
+    executor: anchore/anchore_engine
+    steps:
+      - setup_remote_docker
+      - checkout
+      - run:
+          command: 'docker build -t "devsecops-lab/anchore:latest" .'
+          name: build container
+      - anchore/analyze_local_image:
+          image_name: 'devsecops-lab/anchore:latest'
+          policy_failure: true
+          timeout: '500'
+      - anchore/parse_reports
+      - store_artifacts:
+          path: anchore-reports
+      - run:
+          name: report analysis
+          command: |
+            ls anchore-reports
+            if ls anchore-reports/*vuln*.json >/dev/null 2>&1; then
+              exit 1
+            fi
+
+  clair_local_image_scan:
+    executor: env-publisher
+    machine: true
+    steps:
+      - checkout
+      - run:
+          name: Clair Local Scan 
+          command: |
+            docker build -t devsecops-lab/clair:latest .
+            docker run -p 5432:5432 -d --name db arminc/clair-db:latest
+            docker run -p 6060:6060 --link db:postgres -d --name clair arminc/clair-local-scan:latest
+            wget https://github.com/arminc/clair-scanner/releases/download/v12/clair-scanner_linux_386 -O clair-scanner
+            chmod +x clair-scanner
+            ./clair-scanner --ip=$(ip addr show docker0 | grep inet | awk 'NR==1{print $2}' | cut -d / -f 1) -r output.json devsecops-lab/clair:latest
+            if [ -z $(cat output.json | grep Low) ]; then 
+              echo "No Vulnerabilities Found" 
+            else 
+              exit 1  
+            fi
+            
+workflows:
+  version: 2
+  build-master:
+    jobs:
+      - anchore_local_image_scan
+      - clair_local_image_scan
